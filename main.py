@@ -84,7 +84,7 @@ def main():
         )
     )
 
-    print(f"\nReport saved to: {filename}")
+    print(f"\nReport saved to: {filename} ")
 
 
 if __name__ == "__main__":
