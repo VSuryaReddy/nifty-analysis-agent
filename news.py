@@ -3,22 +3,35 @@ import json
 import calendar
 from datetime import datetime, timezone
 from urllib.parse import quote
+from datetime import datetime, timedelta, timezone
 
 import feedparser
 
 
 NEWS_QUERIES = {
-    "indian_economy": (
-        "India RBI inflation GDP economy"
+    "india_macro": (
+        "India RBI inflation GDP interest rates "
+        "monetary policy"
     ),
-    "indian_markets": (
-        "Nifty FII DII banking Indian stock market"
+    "india_policy": (
+        "India government economic policy "
+        "budget tariffs regulation"
     ),
-    "global_economy": (
-        "Federal Reserve US inflation treasury yields stocks"
+    "india_markets": (
+        "Nifty Bank Nifty FII DII "
+        "Indian stock market"
+    ),
+    "global_macro": (
+        "Federal Reserve US inflation "
+        "Treasury yields interest rates"
+    ),
+    "global_markets": (
+        "S&P 500 Nasdaq global stocks "
+        "market selloff"
     ),
     "global_risks": (
-        "Brent crude oil OPEC geopolitical trade tariffs"
+        "Brent crude OPEC geopolitical "
+        "oil supply trade tariffs"
     ),
 }
 
@@ -38,6 +51,54 @@ def build_rss_url(query):
     )
 
 
+def is_relevant_article(category, title):
+    title_lower = title.lower()
+
+    if category == "india_policy":
+        india_terms = (
+            "india", "indian", "rbi", "nifty",
+            "sebi", "union budget", "new delhi",
+        )
+        return any(
+            term in title_lower for term in india_terms
+        )
+
+    return True
+
+
+
+def is_recent_article(published_at_utc, max_age_days=7):
+    if published_at_utc is None:
+        return False
+
+    try:
+        if isinstance(published_at_utc, datetime):
+            published = published_at_utc
+
+        elif isinstance(published_at_utc, str):
+            published = datetime.fromisoformat(
+                published_at_utc.replace("Z", "+00:00")
+            )
+
+        else:
+            return False
+
+        if published.tzinfo is None:
+            return False
+
+        now = datetime.now(timezone.utc)
+        age = now - published
+
+        return (
+            timedelta(0)
+            <= age
+            <= timedelta(days=max_age_days)
+        )
+
+    except (ValueError, TypeError):
+        return False
+
+
 def fetch_news():
     now = datetime.now(timezone.utc)
 
@@ -47,6 +108,7 @@ def fetch_news():
         "errors": {},
     }
 
+    # Track duplicate article titles across categories
     seen = set()
 
     for category, query in NEWS_QUERIES.items():
@@ -64,12 +126,16 @@ def fetch_news():
             count = 0
 
             for entry in feed.entries:
+
+                # Limit articles per category
                 if count >= MAX_ARTICLES_PER_CATEGORY:
                     break
 
+                # Skip articles without publication dates
                 if not entry.get("published_parsed"):
                     continue
 
+                # Convert RSS publication date to UTC
                 published = datetime.fromtimestamp(
                     calendar.timegm(
                         entry.published_parsed
@@ -77,19 +143,33 @@ def fetch_news():
                     tz=timezone.utc,
                 )
 
-                age_days = (
-                    now - published
-                ).total_seconds() / 86400
-
-                if not 0 <= age_days <= MAX_AGE_DAYS:
+                # Step 1: Freshness validation
+                if not is_recent_article(
+                    published,
+                    max_age_days=MAX_AGE_DAYS
+                ):
                     continue
 
-                title = entry.get("title", "").strip()
-                link = entry.get("link", "")
+                # Extract article details
+                title = entry.get(
+                    "title", ""
+                ).strip()
+
+                link = entry.get(
+                    "link", ""
+                )
 
                 if not title or not link:
                     continue
 
+                # Step 2: Basic relevance validation
+                if not is_relevant_article(
+                    category,
+                    title
+                ):
+                    continue
+
+                # Step 3: Exact-title duplicate detection
                 key = title.casefold()
 
                 if key in seen:
@@ -97,6 +177,7 @@ def fetch_news():
 
                 seen.add(key)
 
+                # Step 4: Store accepted article
                 result["articles"].append({
                     "category": category,
                     "title": title,
@@ -105,7 +186,9 @@ def fetch_news():
                     ),
                     "source": entry.get(
                         "source", {}
-                    ).get("title", "Unknown"),
+                    ).get(
+                        "title", "Unknown"
+                    ),
                     "url": link,
                 })
 

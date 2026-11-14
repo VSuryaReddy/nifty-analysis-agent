@@ -5,6 +5,13 @@ from pathlib import Path
 
 from market_data import fetch_market_snapshot
 from news import fetch_news
+from news_intelligence import group_news_into_events
+from event_quality import assess_event_quality
+from fact_verification import (
+    verify_event_facts,
+    assess_headline_agreement,
+    apply_evidence_assessment,
+)
 from analyst import analyze_market
 
 
@@ -37,11 +44,19 @@ def main():
             "No news collected. Analysis stopped."
         )
 
-    print("\n3. Analyzing with OpenAI...")
-    analysis = analyze_market(
-        market_data,
-        news_data,
-    )
+    print("\n3. Grouping news into events...")
+    grouped_news = group_news_into_events(news_data)
+
+    print("\n4. Filtering market-relevant events...")
+    quality_result = assess_event_quality(grouped_news)
+
+    print("\n5. Assessing claim evidence...")
+    fact_result = verify_event_facts(quality_result)
+    fact_result = assess_headline_agreement(fact_result)
+    fact_result = apply_evidence_assessment(fact_result)
+
+    print("\n6. Analyzing with OpenAI...")
+    analysis = analyze_market(market_data, fact_result)
 
     report = {
         "generated_at_utc": datetime.now(
@@ -49,7 +64,22 @@ def main():
         ).isoformat(),
         "market_data": market_data,
         "news_count": news_data["article_count"],
-        "news_errors": news_data["errors"],
+        "news_errors": news_data.get("errors", []),
+        "news_pipeline": {
+            "grouped_events": len(
+                grouped_news.get("events", [])
+            ),
+            "accepted_events": len(
+                quality_result.get("accepted_events", [])
+            ),
+            "assessed_events": len(
+                fact_result.get("assessed_events", [])
+            ),
+            "unassigned_articles": grouped_news.get(
+                "unassigned_articles", []
+            ),
+        },
+        "news_evidence": fact_result,
         "analysis": analysis,
     }
 
@@ -84,7 +114,7 @@ def main():
         )
     )
 
-    print(f"\nReport saved to: {filename} ")
+    print(f"\nReport saved to: {filename}")
 
 
 if __name__ == "__main__":

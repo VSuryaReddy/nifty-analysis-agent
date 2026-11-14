@@ -1,16 +1,13 @@
 
 import json
 import os
-
-from dotenv import load_dotenv
-from openai import OpenAI
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv()
-
 
 
 SYSTEM_PROMPT = """
@@ -72,8 +69,8 @@ Do not claim missing information was analyzed.
 
 3. NEWS RELEVANCE AND RECENCY
 
-Group duplicate headlines about the same underlying
-development into one event.
+Events are already grouped upstream. Do not regroup or infer
+that every claim in an event is a single confirmed development.
 
 Distinguish recent developments from historical trends.
 
@@ -95,7 +92,7 @@ policy decisions.
 4. SOURCE TRANSPARENCY
 
 For each important news-driven event, include supporting
-article titles and URLs from the supplied news data.
+article titles and URLs from the qualified claims supplied.
 
 Never invent article titles or URLs.
 
@@ -271,11 +268,115 @@ When evidence is balanced, clearly state that there
 is no strong directional advantage.
 
 Never invent data to make the analysis appear complete.
+
+
+10. QUALIFIED NEWS EVIDENCE (CRITICAL)
+
+The news input contains assessed events and claim-level evidence,
+not raw news. Use only the supplied qualified claims as news evidence.
+Event names are navigation labels, not independently verified facts.
+Do not infer additional facts from an event name or grouping.
+
+- verification_status UNVERIFIED applies to all headline-derived claims.
+- CORROBORATED means multiple preferred publisher headlines agree;
+  it does NOT mean independently verified.
+- CREDIBLE_SINGLE_SOURCE is an attributed report, not confirmed truth.
+- FORECAST is an expectation, not an outcome.
+- OPINION is commentary, not established fact.
+- MIXED_CLAIM contains mixed evidence; avoid treating it as fact.
+- CONFLICTING, INSUFFICIENT_EVIDENCE and NOT_SUPPORTED must not
+  support directional conclusions or be presented as established facts.
+- If an event contains multiple developments, discuss separately;
+  do not assume a unified direction or causal link.
+- Headlines may be stale; compare reported dates with market-data
+  timestamps. Never assume a reported historical move is current.
+- Use only supplied source titles and URLs; do not invent citations.
+- If qualified news is empty, analyze available market data only,
+  explicitly note the news evidence gap and reduce certainty.
+- Never claim FII/DII flows, policy actions or numerical figures
+  are confirmed based only on news headlines.
 """
 
 
+def prepare_qualified_news(fact_result):
+    """Build a conservative, compact news input from assessed claims."""
+    qualified_events = []
+    excluded_claims = 0
 
-def analyze_market(market_data, news_data):
+    for event in fact_result.get("assessed_events", []):
+        sources = {
+            source["id"]: source
+            for source in event.get("sources", [])
+        }
+
+        qualified_claims = []
+
+        for claim in event.get("fact_assessment", {}).get("claims", []):
+            assessment = claim.get("evidence_assessment", {})
+            status = assessment.get(
+                "evidence_status",
+                "INSUFFICIENT_EVIDENCE"
+            )
+            grounding = claim.get("headline_grounding")
+
+            if (
+                status in {"CONFLICTING", "INSUFFICIENT_EVIDENCE"}
+                or grounding != "SUPPORTED_BY_HEADLINE"
+            ):
+                excluded_claims += 1
+                continue
+
+            supporting = [
+                {
+                    "title": sources[article_id]["title"],
+                    "url": sources[article_id]["url"],
+                    "published_at_utc": sources[article_id][
+                        "published_at_utc"
+                    ],
+                    "publisher": sources[article_id].get("source", "")
+                }
+                for article_id in claim.get("supporting_article_ids", [])
+                if article_id in sources
+            ]
+
+            if not supporting:
+                excluded_claims += 1
+                continue
+
+            qualified_claims.append({
+                "claim": claim["claim"],
+                "claim_type": claim["claim_type"],
+                "evidence_status": status,
+                "verification_status": "UNVERIFIED",
+                "sources": supporting,
+            })
+
+        if qualified_claims:
+            qualified_events.append({
+                "event_name": event.get(
+                    "event_name",
+                    "Unnamed event"
+                ),
+                "category": event.get("category"),
+                "relevance": event.get(
+                    "relevance_assessment", {}
+                ).get("relevance"),
+                "claims": qualified_claims,
+            })
+
+    return {
+        "events": qualified_events,
+        "excluded_claim_count": excluded_claims,
+        "limitations": [
+            "News evidence is assessed using RSS headlines only, "
+            "not independent fact verification.",
+            "Claims without sufficient headline support are "
+            "excluded from directional reasoning.",
+        ],
+    }
+
+
+def analyze_market(market_data, fact_result):
     api_key = os.getenv("OPENAI_API_KEY")
 
     if not api_key:
@@ -284,8 +385,7 @@ def analyze_market(market_data, news_data):
         )
 
     client = OpenAI(api_key=api_key)
-    
-    
+
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
 
     market_session_note = (
@@ -305,20 +405,17 @@ def analyze_market(market_data, news_data):
             "Do not call it the final closing price."
         )
 
-
-    
     evidence = {
         "analysis_time_ist": now_ist.isoformat(),
         "market_session_note": market_session_note,
         "market_data": market_data,
-        "news_data": news_data,
+        "qualified_news": prepare_qualified_news(fact_result),
     }
 
-
-    
     response = client.responses.create(
         model=os.getenv(
-            "OPENAI_MODEL", "gpt-4.1-mini"
+            "OPENAI_MODEL",
+            "gpt-4.1-mini"
         ),
         instructions=SYSTEM_PROMPT,
         input=(
@@ -335,7 +432,6 @@ def analyze_market(market_data, news_data):
             }
         },
     )
-
 
     analysis = json.loads(response.output_text)
 
