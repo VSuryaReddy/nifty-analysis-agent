@@ -772,7 +772,7 @@ def validate_probability_group(
         )
 
 
-def validate_analysis(analysis, qualified_news):
+def validate_analysis(analysis, qualified_news, market_data=None):
     """
     Validate JSON structure, probabilities and citations.
 
@@ -940,7 +940,27 @@ def validate_analysis(analysis, qualified_news):
                     "in the qualified news evidence: "
                     f"{source_pair}"
                 )
+    if market_data is not None:
+        missing_markets = set(
+            market_data.get("errors", {})
+        )
 
+        reported_missing = " ".join(
+            analysis["missing_information"]
+        ).lower()
+
+        for market_name in missing_markets:
+            readable_name = market_name.replace("_", " ")
+
+            if (
+                market_name.lower() not in reported_missing
+                and readable_name.lower() not in reported_missing
+            ):
+                raise ValueError(
+                    f"AI did not acknowledge missing "
+                    f"market input: {market_name}"
+                )    
+    
     return analysis
 
 
@@ -1008,6 +1028,7 @@ def analyze_market(market_data, fact_result):
     )
 
     return validate_analysis(
-        analysis,
-        qualified_news
+    analysis,
+    qualified_news,
+    market_data
     )
