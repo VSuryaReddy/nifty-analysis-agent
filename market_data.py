@@ -1,5 +1,6 @@
 
 import json
+import math
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -15,6 +16,8 @@ MARKETS = {
     "nasdaq": "^IXIC",
 }
 
+MAX_AGE_DAYS = 5
+
 
 def fetch_history(symbol):
     """Fetch six months of daily market data."""
@@ -24,10 +27,78 @@ def fetch_history(symbol):
         auto_adjust=True,
     )
 
-    if data.empty:
-        raise ValueError(f"No data returned for {symbol}")
+    if data.empty or "Close" not in data.columns:
+        raise ValueError(f"No closing-price data for {symbol}")
 
-    return data["Close"].dropna()
+    closes = data["Close"].copy()
+
+    if not isinstance(closes.index, pd.DatetimeIndex):
+        raise ValueError("Invalid date index")
+
+    if closes.index.tz is None:
+        raise ValueError("Missing source timezone")
+
+    if closes.index.has_duplicates:
+        raise ValueError("Duplicate observation timestamps")
+
+    if not closes.index.is_monotonic_increasing:
+        raise ValueError("Observation dates are not sorted")
+
+    # Preserve the existing behavior for missing values,
+    # but reject invalid numeric observations.
+    closes = closes.dropna()
+
+    if closes.empty:
+        raise ValueError("No valid closing prices")
+
+    if not all(
+        math.isfinite(float(price)) and float(price) > 0
+        for price in closes
+    ):
+        raise ValueError("Invalid closing price detected")
+
+    return closes
+
+
+def select_eligible_history(name, closes):
+    """Exclude unconfirmed Sunday USD/INR daily bars."""
+    if name == "usd_inr":
+        closes = closes[
+            closes.index.weekday != 6
+        ]
+
+    if len(closes) < 2:
+        raise ValueError("Insufficient eligible price history")
+
+    return closes
+
+
+def validate_freshness(closes, now=None):
+    """Check observation age using source-local dates."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    if now.tzinfo is None:
+        raise ValueError("Current time must be timezone-aware")
+
+    source_timezone = closes.index.tz
+    today = now.astimezone(source_timezone).date()
+    latest_date = closes.index[-1].date()
+
+    age_days = (today - latest_date).days
+
+    if age_days < 0:
+        raise ValueError(
+            f"Future observation date: {latest_date}"
+        )
+
+    if age_days > MAX_AGE_DAYS:
+        raise ValueError(
+            f"Stale observation: {latest_date} "
+            f"({age_days} calendar days old)"
+        )
+
+    return age_days
 
 
 def calculate_rsi(closes, period=14):
@@ -71,9 +142,8 @@ def fetch_market_snapshot():
     for name, symbol in MARKETS.items():
         try:
             closes = fetch_history(symbol)
-
-            if len(closes) < 2:
-                raise ValueError("Insufficient price history")
+            closes = select_eligible_history(name, closes)
+            validate_freshness(closes)
 
             latest = float(closes.iloc[-1])
             previous = float(closes.iloc[-2])
@@ -102,8 +172,10 @@ def fetch_market_snapshot():
                     ),
                     "rsi14": calculate_rsi(closes),
                     "five_session_return_pct": round(
-                        (latest / float(closes.iloc[-6]) - 1)
-                        * 100,
+                        (
+                            latest / float(closes.iloc[-6])
+                            - 1
+                        ) * 100,
                         2,
                     ),
                 })

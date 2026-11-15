@@ -1,281 +1,975 @@
 
 import json
+import math
 import os
-
-from dotenv import load_dotenv
-from openai import OpenAI
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-
+from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv()
-
 
 
 SYSTEM_PROMPT = """
 You are a financial market research analyst specializing
 in the Indian Nifty 50 index.
 
-Your objective is to analyze current market data, important
-Indian developments, and global economic events to generate
-two market outlooks:
+Analyze the supplied market data and qualified news evidence
+to produce:
 
-1. Next trading day
-2. Next 2-6 weeks
+1. Next trading session outlook
+2. Next 2-6 weeks market outlook
 
-Focus on identifying developments that could materially
-influence the direction of Nifty.
+Your objective is to explain the likely market implications
+of technical indicators, domestic developments, and global
+events.
 
-Do not simply summarize financial news. Explain how
-important events could influence Indian equities.
-
-
-IMPORTANT ANALYSIS RULES:
-
-1. EVIDENCE-BASED ANALYSIS
-
-Use only the supplied market data and news evidence.
-
-Do not invent prices, events, economic statistics,
-interest rates, institutional flows, or dates.
-
-Distinguish between:
-- Numerical data supplied by the market collector
-- Developments reported in news headlines
-- Your own financial interpretation
-
-News headlines are unverified reports, not independently
-confirmed facts.
+Do not simply summarize financial news.
 
 
-2. IDENTIFY IMPORTANT EVENTS
+==================================================
+1. EVIDENCE RULES
+==================================================
 
-Prioritize developments that could materially influence
-Nifty over the next trading day or the next 2-6 weeks.
+Use ONLY the supplied market data and qualified news claims.
 
-Consider:
-- Indian inflation, GDP, and RBI monetary policy
-- Government policy and regulatory developments
-- FII/DII institutional activity
-- Banking and major sector developments
-- US Federal Reserve policy and Treasury yields
-- Global equity market performance
-- Crude oil prices and geopolitical developments
-- Currency movements, especially USD/INR
-- Technical market indicators
+The news pipeline has already filtered unsupported claims.
+Do not reconstruct excluded information from article titles,
+event categories, general knowledge, or assumptions.
 
-Only analyze factors for which evidence is supplied.
+Every headline-derived claim remains UNVERIFIED.
 
-Do not claim missing information was analyzed.
+Evidence classifications:
 
+CORROBORATED:
+Multiple preferred publishers report compatible headlines.
+This is NOT independent factual verification.
 
-3. NEWS RELEVANCE AND RECENCY
+CREDIBLE_SINGLE_SOURCE:
+A preferred publisher reports the claim.
+Attribute the information to the reporting source.
 
-Group duplicate headlines about the same underlying
-development into one event.
+FORECAST:
+A prediction or expectation, not an established outcome.
 
-Distinguish recent developments from historical trends.
+OPINION:
+Commentary or interpretation, not a confirmed fact.
 
-Do not use weekly, monthly, or annual historical statistics
-as evidence of today's market activity unless supported
-by current data.
+MIXED_CLAIM:
+Contains a mixture of reporting and interpretation.
+Do not treat the entire claim as an established fact.
 
-This is particularly important for:
-- FII/DII flows
-- RBI interest-rate decisions
-- Inflation data
-- Corporate earnings
-- Global monetary policy
+CONFLICTING or INSUFFICIENT_EVIDENCE:
+Must not be used to support directional conclusions.
 
-Do not confuse market expectations with confirmed
-policy decisions.
+Do not claim that information has been independently verified.
 
 
-4. SOURCE TRANSPARENCY
+==================================================
+2. FACTS VS INTERPRETATIONS
+==================================================
 
-For each important news-driven event, include supporting
-article titles and URLs from the supplied news data.
+Separate three kinds of information:
 
-Never invent article titles or URLs.
+A. MARKET OBSERVATION
 
-If an event is based only on headlines, do not present
-it as independently verified.
+A numerical observation explicitly provided by the
+market-data collector.
 
-Explain the potential transmission mechanism from
-the event to Indian equities.
+Example:
+"Nifty's latest reported daily change was -0.61%."
+
+B. ATTRIBUTED NEWS REPORT
+
+A qualified claim reported by a source.
+
+Example:
+"Economists quoted in a report expect a possible
+RBI rate hike."
+
+C. ANALYST INTERPRETATION
+
+A possible economic or market implication.
+
+Example:
+"Higher interest rates could increase borrowing
+costs and pressure equity valuations."
+
+Never turn an interpretation into an established fact.
+
+Never invent the cause of an observed market movement.
+
+For example:
+
+SUPPORTED:
+"Banking stocks reportedly rallied."
+
+POSSIBLE INTERPRETATION:
+"Banking strength could support the broader index."
+
+NOT SUPPORTED:
+"Banking stocks rallied because of strong earnings,
+improved liquidity, or FII buying."
+
+Do not assert causation unless the supplied evidence
+explicitly establishes it.
 
 
-5. MARKET DATA AND TECHNICAL ANALYSIS
+==================================================
+3. CRITICAL MACROECONOMIC RULES
+==================================================
 
-Consider the available:
-- Nifty price and daily percentage change
+INFLATION:
+
+Do not claim that Indian inflation is high, rising,
+falling, or above RBI tolerance unless qualified
+evidence or numerical market data establishes it.
+
+A forecast of an RBI rate hike does NOT establish
+the current inflation rate or its trend.
+
+RBI POLICY:
+
+Distinguish:
+- Confirmed RBI decisions
+- Economists' expectations
+- Market speculation
+
+A possible rate hike is not a confirmed rate hike.
+
+FII/DII FLOWS:
+
+Do not claim that institutional investors are buying,
+selling, or driving market movements unless qualified
+evidence explicitly supports those claims.
+
+Banking-sector strength does not prove FII buying.
+
+US TREASURY YIELDS:
+
+A headline reporting a historical yield level does not
+establish the current live yield.
+
+Describe the observation using the source date.
+Do not infer an ongoing rise without current yield data.
+
+CRUDE OIL:
+
+Use the supplied Brent market-data observation for
+the latest available price and change.
+
+Do not infer current oil direction from older headlines.
+
+GLOBAL EQUITIES:
+
+Use the supplied S&P 500 and Nasdaq observations
+for the latest available market performance.
+
+Do not describe an older news headline as a current
+market development when newer market data differs.
+
+
+==================================================
+4. MARKET DATA AND RECENCY
+==================================================
+
+Consider available:
+- Nifty price and daily change
 - SMA20 and SMA50
 - RSI14
 - Five-session return
 - India VIX
 - USD/INR
 - Brent crude
-- S&P 500 and Nasdaq
+- S&P 500
+- Nasdaq
 
-The latest daily-bar price may be intraday.
+Use each market instrument's own as_of date.
 
-Do not describe it as a final closing price unless
-the completed trading session is confirmed.
+Never assume all instruments were updated at the
+same time.
 
-Do not treat an elevated RSI as proof that the market
-must reverse.
+The latest daily-bar observation is not necessarily
+a confirmed final closing price.
 
-Distinguish technical momentum from macroeconomic
-and fundamental risks.
+Unless the input explicitly confirms session completion,
+use wording such as:
+
+"Latest available Nifty observation"
+
+or:
+
+"Nifty's reported daily-bar value"
+
+Do not describe a value as simultaneously intraday
+and a confirmed closing price.
+
+Do not assume a market is currently trading.
+
+Do not interpret RSI above 70 as proof of an
+imminent correction.
+
+Technical indicators describe market conditions,
+not guaranteed future movements.
 
 
-6. NEXT TRADING DAY OUTLOOK
+==================================================
+5. EVENT ANALYSIS
+==================================================
 
-Evaluate the balance between:
-- Recent Nifty price momentum
-- Market volatility
-- Important domestic developments
-- Global market signals
-- Overnight and upcoming event risks
+Prioritize developments that could materially affect
+Nifty over the next session or the next 2-6 weeks.
+
+Consider only evidence supplied for:
+- RBI policy and inflation
+- Government and regulatory developments
+- Institutional activity
+- Banking and major sectors
+- US monetary policy and bond yields
+- Global equity performance
+- Crude oil and geopolitical developments
+- Currency movements
+
+For each important news-driven event:
+
+1. State the qualified development.
+2. Identify whether it is reported, forecast, or opinion.
+3. Explain its possible impact on Indian equities.
+4. Include supporting article titles and URLs.
+
+Never invent sources.
+
+Do not treat separate developments as one confirmed
+causal sequence simply because they belong to the
+same news category.
+
+If evidence is uncertain, explain that uncertainty.
+
+Avoid listing low-impact news just to increase the
+number of events.
+
+
+==================================================
+6. NEXT TRADING SESSION
+==================================================
+
+Consider:
+- Nifty momentum and technical conditions
+- India VIX
+- Available global market observations
+- Qualified domestic and global developments
+- Relevant upcoming risks, only if supplied
 
 Provide:
-- Bullish/upward scenario percentage
-- Bearish/downward scenario percentage
+- Upward scenario percentage
+- Downward scenario percentage
 - Sideways scenario percentage
 
-Explain the primary factors supporting each direction.
+The percentages must total exactly 100.
 
 Do not assume the next calendar day is a trading day.
 
+Do not invent an exact next-session date.
 
-7. NEXT 2-6 WEEKS OUTLOOK
 
-Focus on developments that could influence the broader
-market regime.
+==================================================
+7. NEXT 2-6 WEEKS
+==================================================
 
-Consider:
-- Monetary policy expectations
-- Inflation and economic growth
-- Global liquidity and bond yields
-- Institutional investor trends, if available
-- Crude oil and currency developments
-- Sustained technical momentum
-- Major geopolitical risks
+Evaluate potential changes in the broader market regime.
 
-Distinguish temporary market reactions from developments
-that could change the medium-term market direction.
+Distinguish:
+- Short-term technical movements
+- Sustained macroeconomic developments
+- Forecasts and expectations
+- Unconfirmed risks
 
 Explain both bullish and bearish factors.
 
+Do not let a single speculative headline dominate
+the medium-term outlook.
 
-8. SCENARIO PROBABILITIES
 
-Scenario percentages are subjective analytical estimates,
-NOT statistically calibrated forecasts.
+==================================================
+8. PROBABILITIES AND UNCERTAINTY
+==================================================
 
-For each horizon, the three percentages must total 100.
+Scenario percentages are subjective analytical estimates.
 
-Use the following outlook labels:
+They are NOT statistically calibrated probabilities.
+
+For each horizon, all three percentages must total 100.
+
+Allowed outlook labels:
 - Bullish
 - Bearish
 - Sideways
 - Mixed
 
-The outlook label must be consistent with the
-scenario percentages.
-
-Use "Mixed" when competing scenarios are similarly
+Use Mixed when competing scenarios are similarly
 plausible and there is no clear directional advantage.
 
-Do not present subjective percentages as guaranteed
-predictions or established statistical probabilities.
+Do not manufacture confidence when evidence is weak.
+
+If important information is unavailable, identify it
+in missing_information.
+
+Do not claim missing information was analyzed.
 
 
-9. UNCERTAINTY AND MISSING INFORMATION
+==================================================
+9. SOURCE AND CLAIM RESTRICTIONS
+==================================================
 
-Identify important missing inputs that could materially
-change the market outlook.
+Use only the claims under qualified_news.events[].claims
+as news evidence.
 
-If evidence is insufficient or conflicting, explain
-the limitation clearly.
+Category labels are organizational metadata, not facts.
 
-Do not manufacture confidence or certainty.
+Source titles and URLs are citation metadata.
+Do not extract additional factual claims from their
+wording beyond the associated qualified claim.
 
-Do not make unsupported claims about future
-market movements.
+An article title may contain unsupported details.
+Those details must not enter the analysis independently.
+
+Do not use qualified news sources to support claims
+that they do not actually establish.
+
+When qualified news is empty, analyze the market data
+alone and explicitly identify the news coverage gap.
 
 
-OUTPUT REQUIREMENTS:
+==================================================
+10. OUTPUT REQUIREMENTS
+==================================================
 
-Return ONLY a valid JSON object.
+Return ONLY valid JSON.
 
-Do not include Markdown, code fences, or explanations
-outside the JSON.
+No Markdown or explanations outside JSON.
 
-Use the following structure:
+Use exactly this structure:
 
 {
-  "market_summary": "Concise explanation of the current market environment",
+  "market_summary": "Current market environment",
 
   "important_events": [
     {
-      "event": "Important market-moving development",
-      "impact": "Positive, Negative, Mixed or Uncertain",
-      "reason": "Explain how this event could influence Nifty",
+      "event": "Important development",
+      "impact": "Positive",
+      "reason": "Evidence and potential Nifty impact",
       "sources": [
         {
-          "title": "Supporting article title",
-          "url": "URL from supplied news data"
+          "title": "Supplied article title",
+          "url": "Supplied article URL"
         }
       ]
     }
   ],
 
   "next_day": {
-    "outlook": "Bullish, Bearish, Sideways or Mixed",
-    "up_probability": 0,
-    "down_probability": 0,
-    "sideways_probability": 0,
-    "explanation": "Explain the next trading day outlook and supporting evidence"
+    "outlook": "Mixed",
+    "up_probability": 35,
+    "down_probability": 40,
+    "sideways_probability": 25,
+    "explanation": "Evidence-based next-session outlook"
   },
 
   "next_2_6_weeks": {
-    "outlook": "Bullish, Bearish, Sideways or Mixed",
-    "bullish_probability": 0,
-    "bearish_probability": 0,
-    "sideways_probability": 0,
-    "explanation": "Explain the medium-term market regime and important drivers"
+    "outlook": "Mixed",
+    "bullish_probability": 35,
+    "bearish_probability": 40,
+    "sideways_probability": 25,
+    "explanation": "Evidence-based medium-term outlook"
   },
 
   "key_risks": [
-    "Important risks that could change the market outlook"
+    "Risk that could materially change the outlook"
   ],
 
   "missing_information": [
-    "Important unavailable or unverified market inputs"
+    "Important unavailable or unverified input"
   ]
 }
 
-FINAL INSTRUCTIONS:
+The example percentages are placeholders.
+Derive your own scenario estimates from the supplied
+evidence.
 
-Prioritize analytical quality over the number of events.
+Impact must be one of:
+Positive, Negative, Mixed, Uncertain.
 
-Focus on major developments rather than routine
-market news.
+Prioritize accuracy and meaningful interpretation
+over the number of reported events.
 
-Explain WHY an event matters for Nifty, not merely
-WHAT happened.
+Never invent facts to make the report appear complete.
+"""
 
-When evidence is balanced, clearly state that there
-is no strong directional advantage.
+SYSTEM_PROMPT += """
 
-Never invent data to make the analysis appear complete.
+==================================================
+11. TEMPORAL EVIDENCE PRIORITY
+==================================================
+
+Use the analysis timestamp and each market instrument's
+as_of date to establish which observations are newer.
+
+RULE 1: COMPLETED OBSERVATIONS OVERRIDE PRE-MARKET SIGNALS
+
+If a news headline predicts how a market may open on a
+particular date, but the supplied market-data collector
+already contains an observation for that date or later,
+do not use the old pre-market prediction as a forward-
+looking signal.
+
+Example:
+
+A November 13 headline predicts a positive US market open.
+The collector also supplies November 13 S&P 500 and Nasdaq
+observations.
+
+Use the collector's observations to assess the market.
+Do not use the earlier opening prediction as evidence
+of positive sentiment for the next trading session.
+
+A pre-market forecast is not the final market outcome.
+
+
+RULE 2: HISTORICAL LEVELS ARE NOT CURRENT LEVELS
+
+A headline reporting a Treasury yield, inflation figure,
+currency rate, or index level on an earlier date establishes
+only what the source reported at that time.
+
+Do not describe it as the current value without a newer
+observation.
+
+For example:
+
+A November 10 headline reports US 10-year yields above 5%.
+
+Acceptable:
+"A November 10 report indicated yields had exceeded 5%."
+
+Not acceptable:
+"US Treasury yields are currently above 5%."
+
+If the current level is unavailable, explicitly say so.
+
+
+RULE 3: FORECASTS REMAIN CONDITIONAL
+
+A forecast of an RBI rate hike, GDP growth, market rally,
+or policy change is not confirmation of the predicted event.
+
+Do not infer the underlying economic conditions solely
+from the forecast.
+
+Explain the potential impact conditionally.
+
+
+RULE 4: MARKET SESSION LANGUAGE
+
+Use "latest available observation" or "reported daily-bar
+value" unless the input explicitly confirms the market's
+final closing price.
+
+Do not say Nifty is currently trading when the observation
+comes from an earlier session.
+
+Do not describe the market as open or closed based solely
+on an old daily-bar observation.
+
+
+RULE 5: DIRECTIONAL REASONING
+
+Prefer newer numerical market observations when evaluating
+recent price direction.
+
+Historical news may provide macroeconomic context, but
+must not override newer market observations for the same
+instrument and period.
+
+When current information is missing, acknowledge the gap
+rather than extending historical observations into the
+present.
 """
 
 
 
-def analyze_market(market_data, news_data):
+ALLOWED_EVIDENCE_STATUSES = {
+    "CORROBORATED",
+    "CREDIBLE_SINGLE_SOURCE",
+    "FORECAST",
+    "OPINION",
+    "MIXED_CLAIM",
+}
+
+ALLOWED_OUTLOOKS = {
+    "Bullish",
+    "Bearish",
+    "Sideways",
+    "Mixed",
+}
+
+ALLOWED_IMPACTS = {
+    "Positive",
+    "Negative",
+    "Mixed",
+    "Uncertain",
+}
+
+
+def is_superseded_premarket_signal(claim, market_data, sources):
+    """
+    Exclude an old US equity pre-market opening signal
+    when same-day or newer US index data is available.
+
+    This intentionally handles only a narrow, identifiable
+    case. Other news remains subject to the analyst's
+    temporal-evidence instructions.
+    """
+
+    claim_text = claim.get("claim", "").lower()
+
+    is_us_premarket_signal = (
+        any(
+            term in claim_text
+            for term in (
+                "futures",
+                "pre-market",
+                "premarket",
+            )
+        )
+        and any(
+            term in claim_text
+            for term in (
+                "dow jones",
+                "s&p 500",
+                "nasdaq",
+                "wall street",
+                "us market",
+                "u.s. market",
+            )
+        )
+        and any(
+            term in claim_text
+            for term in (
+                "open",
+                "opening",
+            )
+        )
+    )
+
+    if not is_us_premarket_signal:
+        return False
+
+    markets = market_data.get("markets", {})
+
+    observation_dates = []
+
+    for symbol in ("sp500", "nasdaq"):
+        observation = markets.get(symbol, {})
+        date_text = observation.get("as_of")
+
+        if not isinstance(date_text, str):
+            continue
+
+        try:
+            observation_dates.append(
+                datetime.fromisoformat(
+                    date_text.replace("Z", "+00:00")
+                ).date()
+            )
+        except ValueError:
+            continue
+
+    if not observation_dates:
+        return False
+
+    latest_observation_date = max(observation_dates)
+
+    supporting_dates = []
+
+    for article_id in claim.get(
+        "supporting_article_ids", []
+    ):
+        source = sources.get(article_id)
+
+        if not source:
+            continue
+
+        published_at = source.get("published_at_utc")
+
+        if not published_at:
+            return False
+
+        try:
+            published_date = datetime.fromisoformat(
+                published_at.replace("Z", "+00:00")
+            ).date()
+        except (ValueError, TypeError):
+            return False
+
+        supporting_dates.append(published_date)
+
+    if not supporting_dates:
+        return False
+
+    return all(
+        published_date <= latest_observation_date
+        for published_date in supporting_dates
+    )
+
+
+def prepare_qualified_news(fact_result, market_data):
+    """
+    Convert assessed news into conservative claim-level
+    evidence for the analyst.
+
+    Exclude unsupported or conflicting claims.
+    """
+
+    qualified_events = []
+    excluded_claims = 0
+
+    for event in fact_result.get("assessed_events", []):
+        sources = {
+            source["id"]: source
+            for source in event.get("sources", [])
+        }
+
+        qualified_claims = []
+
+        claims = event.get(
+            "fact_assessment", {}
+        ).get("claims", [])
+
+        for claim in claims:
+            if is_superseded_premarket_signal(
+                claim,
+                market_data,
+                sources
+            ):
+                excluded_claims += 1
+                continue
+            assessment = claim.get(
+                "evidence_assessment", {}
+            )
+
+            status = assessment.get(
+                "evidence_status",
+                "INSUFFICIENT_EVIDENCE"
+            )
+
+            grounding = claim.get(
+                "headline_grounding"
+            )
+
+            if (
+                status not in ALLOWED_EVIDENCE_STATUSES
+                or grounding != "SUPPORTED_BY_HEADLINE"
+            ):
+                excluded_claims += 1
+                continue
+
+            supporting_sources = []
+
+            for article_id in claim.get(
+                "supporting_article_ids", []
+            ):
+                source = sources.get(article_id)
+
+                if not source:
+                    continue
+
+                supporting_sources.append({
+                    "title": source["title"],
+                    "url": source["url"],
+                    "published_at_utc": source[
+                        "published_at_utc"
+                    ],
+                    "publisher": source.get(
+                        "source", ""
+                    ),
+                })
+
+            if not supporting_sources:
+                excluded_claims += 1
+                continue
+
+            qualified_claims.append({
+                "claim": claim["claim"],
+                "claim_type": claim["claim_type"],
+                "evidence_status": status,
+                "verification_status": "UNVERIFIED",
+                "sources": supporting_sources,
+            })
+
+        if qualified_claims:
+            qualified_events.append({
+                "category": event.get("category"),
+                "relevance": event.get(
+                    "relevance_assessment", {}
+                ).get("relevance"),
+                "claims": qualified_claims,
+            })
+
+    return {
+        "events": qualified_events,
+        "excluded_claim_count": excluded_claims,
+        "limitations": [
+            "News is assessed using RSS headlines only.",
+            "Headline agreement is not independent "
+            "fact verification.",
+            "Unsupported and conflicting claims are "
+            "excluded from directional reasoning.",
+        ],
+    }
+
+
+def validate_probability_group(
+    section,
+    probability_fields,
+    section_name
+):
+    """
+    Validate the three scenario percentages.
+    """
+
+    values = []
+
+    for field in probability_fields:
+        value = section.get(field)
+
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
+            raise ValueError(
+                f"{section_name}.{field} must be numeric"
+            )
+
+        if not 0 <= value <= 100:
+            raise ValueError(
+                f"{section_name}.{field} must be "
+                "between 0 and 100"
+            )
+
+        values.append(value)
+
+    if not math.isclose(
+        sum(values),
+        100,
+        rel_tol=0,
+        abs_tol=0.000001
+    ):
+        raise ValueError(
+            f"{section_name} probabilities must total 100. "
+            f"Received {sum(values)}"
+        )
+
+
+def validate_analysis(analysis, qualified_news, market_data=None):
+    """
+    Validate JSON structure, probabilities and citations.
+
+    This is structural validation, not independent
+    verification of the analyst's narrative.
+    """
+
+    if not isinstance(analysis, dict):
+        raise ValueError(
+            "AI analysis must be a JSON object"
+        )
+
+    required_fields = {
+        "market_summary",
+        "important_events",
+        "next_day",
+        "next_2_6_weeks",
+        "key_risks",
+        "missing_information",
+    }
+
+    missing = required_fields - analysis.keys()
+
+    if missing:
+        raise ValueError(
+            f"Missing analysis fields: {sorted(missing)}"
+        )
+
+    if not isinstance(
+        analysis["market_summary"], str
+    ):
+        raise ValueError(
+            "market_summary must be a string"
+        )
+
+    for field in (
+        "important_events",
+        "key_risks",
+        "missing_information",
+    ):
+        if not isinstance(analysis[field], list):
+            raise ValueError(
+                f"{field} must be a list"
+            )
+
+    for field in (
+        "key_risks",
+        "missing_information",
+    ):
+        if not all(
+            isinstance(item, str)
+            for item in analysis[field]
+        ):
+            raise ValueError(
+                f"{field} must contain strings"
+            )
+
+    next_day = analysis["next_day"]
+    medium_term = analysis["next_2_6_weeks"]
+
+    for section_name, section in (
+        ("next_day", next_day),
+        ("next_2_6_weeks", medium_term),
+    ):
+        if not isinstance(section, dict):
+            raise ValueError(
+                f"{section_name} must be an object"
+            )
+
+        if section.get("outlook") not in ALLOWED_OUTLOOKS:
+            raise ValueError(
+                f"Invalid {section_name} outlook"
+            )
+
+        if not isinstance(
+            section.get("explanation"), str
+        ):
+            raise ValueError(
+                f"{section_name}.explanation must be a string"
+            )
+
+    validate_probability_group(
+        next_day,
+        (
+            "up_probability",
+            "down_probability",
+            "sideways_probability",
+        ),
+        "next_day",
+    )
+
+    validate_probability_group(
+        medium_term,
+        (
+            "bullish_probability",
+            "bearish_probability",
+            "sideways_probability",
+        ),
+        "next_2_6_weeks",
+    )
+
+    # Only source pairs attached to retained claims
+    # may appear in the final analysis.
+    allowed_sources = set()
+
+    for event in qualified_news["events"]:
+        for claim in event["claims"]:
+            for source in claim["sources"]:
+                allowed_sources.add((
+                    source["title"],
+                    source["url"],
+                ))
+
+    for index, event in enumerate(
+        analysis["important_events"]
+    ):
+        if not isinstance(event, dict):
+            raise ValueError(
+                f"important_events[{index}] must be an object"
+            )
+
+        if not isinstance(event.get("event"), str):
+            raise ValueError(
+                f"important_events[{index}].event "
+                "must be a string"
+            )
+
+        if not isinstance(event.get("reason"), str):
+            raise ValueError(
+                f"important_events[{index}].reason "
+                "must be a string"
+            )
+
+        if event.get("impact") not in ALLOWED_IMPACTS:
+            raise ValueError(
+                f"Invalid impact for event {index}"
+            )
+
+        sources = event.get("sources")
+
+        if not isinstance(sources, list):
+            raise ValueError(
+                f"Event {index} sources must be a list"
+            )
+
+        if not sources:
+            raise ValueError(
+                f"Event {index} has no supporting sources"
+            )
+
+        for source in sources:
+            if not isinstance(source, dict):
+                raise ValueError(
+                    f"Invalid source object in event {index}"
+                )
+
+            source_pair = (
+                source.get("title"),
+                source.get("url"),
+            )
+
+            if source_pair not in allowed_sources:
+                raise ValueError(
+                    "AI used a source that is not present "
+                    "in the qualified news evidence: "
+                    f"{source_pair}"
+                )
+    if market_data is not None:
+        missing_markets = set(
+            market_data.get("errors", {})
+        )
+
+        reported_missing = " ".join(
+            analysis["missing_information"]
+        ).lower()
+
+        for market_name in missing_markets:
+            readable_name = market_name.replace("_", " ")
+
+            if (
+                market_name.lower() not in reported_missing
+                and readable_name.lower() not in reported_missing
+            ):
+                raise ValueError(
+                    f"AI did not acknowledge missing "
+                    f"market input: {market_name}"
+                )    
+    
+    return analysis
+
+
+def analyze_market(market_data, fact_result):
+    """
+    Generate the Nifty analysis using market data
+    and qualified news evidence.
+    """
+
     api_key = os.getenv("OPENAI_API_KEY")
 
     if not api_key:
@@ -283,47 +977,40 @@ def analyze_market(market_data, news_data):
             "OPENAI_API_KEY is missing from .env"
         )
 
-    client = OpenAI(api_key=api_key)
-    
-    
-    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
-
-    market_session_note = (
-        "The latest Nifty daily-bar price may be intraday. "
-        "Do not describe it as a final closing price unless "
-        "the completed session is confirmed."
+    now_ist = datetime.now(
+        ZoneInfo("Asia/Kolkata")
     )
 
-    if (
-        now_ist.weekday() < 5
-        and now_ist.hour * 60 + now_ist.minute < 15 * 60 + 30
-        and now_ist.hour * 60 + now_ist.minute >= 9 * 60 + 15
-    ):
-        market_session_note = (
-            "Indian market is within normal trading hours. "
-            "The latest Nifty price is potentially intraday. "
-            "Do not call it the final closing price."
-        )
+    market_session_note = (
+        "Market-data values are daily-bar observations. "
+        "Their as_of dates must be respected. "
+        "Do not call a value a confirmed final close "
+        "unless session completion is established."
+    )
 
+    qualified_news = prepare_qualified_news(
+    fact_result,
+    market_data
+    )
 
-    
     evidence = {
         "analysis_time_ist": now_ist.isoformat(),
         "market_session_note": market_session_note,
         "market_data": market_data,
-        "news_data": news_data,
+        "qualified_news": qualified_news,
     }
 
+    client = OpenAI(api_key=api_key)
 
-    
     response = client.responses.create(
         model=os.getenv(
-            "OPENAI_MODEL", "gpt-4.1-mini"
+            "OPENAI_MODEL",
+            "gpt-4.1-mini"
         ),
         instructions=SYSTEM_PROMPT,
         input=(
-            "Analyze the following Nifty market evidence "
-            "and return your analysis as a valid JSON object.\n\n"
+            "Analyze the supplied Nifty market evidence. "
+            "Return the required JSON object.\n\n"
             + json.dumps(
                 evidence,
                 ensure_ascii=False,
@@ -336,7 +1023,12 @@ def analyze_market(market_data, news_data):
         },
     )
 
+    analysis = json.loads(
+        response.output_text
+    )
 
-    analysis = json.loads(response.output_text)
-
-    return analysis
+    return validate_analysis(
+    analysis,
+    qualified_news,
+    market_data
+    )
