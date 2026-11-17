@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -394,6 +395,7 @@ Use exactly this structure:
 }
 
 The example percentages are placeholders.
+Also include upcoming_high_impact_events as specified in section 12.
 Derive your own scenario estimates from the supplied
 evidence.
 
@@ -496,6 +498,54 @@ rather than extending historical observations into the
 present.
 """
 
+
+
+SYSTEM_PROMPT += """
+
+==================================================
+12. UPCOMING HIGH-IMPACT EVENTS — WATCHLIST ONLY
+==================================================
+
+Return upcoming_high_impact_events as a separate list.
+This is an informational caution/watchlist, NOT a forecast.
+
+Use ONLY qualified_news.events[].claims and their attached
+sources. Include an event only when a qualified claim explicitly
+supports BOTH its scheduled calendar date and its occurrence.
+Do not infer event dates from general knowledge, or invent
+future meetings, announcements, or earnings dates.
+
+Use analysis_time_ist as the report date. Express event dates
+as YYYY-MM-DD in the Asia/Kolkata calendar. Include an event
+when event_date >= report date, including events happening today.
+Exclude events whose event_date is before the report date.
+Do not use the event's time of day to exclude it.
+
+Include only material events, such as scheduled FOMC or RBI
+policy decisions, major macroeconomic releases, or important
+Nifty constituent earnings. Explain briefly why to watch.
+Do not predict the outcome or treat it as already completed.
+
+Scheduled future event outcomes must NOT influence the
+next_day or next_2_6_weeks directional percentages. Do not
+change those probabilities based solely on the calendar.
+Existing, qualified market expectations remain separate evidence.
+
+Every listed event must include at least one source attached
+to a retained qualified claim. When none qualify, return [].
+
+Add this top-level JSON property:
+"upcoming_high_impact_events": [
+  {
+    "event": "Scheduled event name",
+    "date": "YYYY-MM-DD",
+    "why_watch": "Potential relevance, without predicting outcome",
+    "sources": [
+      {"title": "Supplied article title", "url": "Supplied URL"}
+    ]
+  }
+]
+"""
 
 
 ALLOWED_EVIDENCE_STATUSES = {
@@ -772,7 +822,32 @@ def validate_probability_group(
         )
 
 
-def validate_analysis(analysis, qualified_news, market_data=None):
+def claim_explicitly_supports_date(claim_text, event_date):
+    """Conservative literal-date check; does not infer relative dates."""
+    if not isinstance(claim_text, str):
+        return False
+
+    # Match a complete ISO date, not a substring of another date.
+    iso_pattern = rf"(?<![\d-]){re.escape(event_date.isoformat())}(?![\d-])"
+    if re.search(iso_pattern, claim_text):
+        return True
+
+    # Explicit English dates with a four-digit year, in either order.
+    month_names = (
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    )
+    month = month_names[event_date.month - 1]
+    day = str(event_date.day)
+    year = str(event_date.year)
+    patterns = (
+        rf"(?<!\w){day}(?:st|nd|rd|th)?\s+{month}\s*,?\s*{year}(?!\d)",
+        rf"(?<!\w){month}\s+{day}(?:st|nd|rd|th)?\s*,?\s*{year}(?!\d)",
+    )
+    return any(re.search(pattern, claim_text, re.IGNORECASE) for pattern in patterns)
+
+
+def validate_analysis(analysis, qualified_news, market_data=None, report_date=None):
     """
     Validate JSON structure, probabilities and citations.
 
@@ -792,6 +867,7 @@ def validate_analysis(analysis, qualified_news, market_data=None):
         "next_2_6_weeks",
         "key_risks",
         "missing_information",
+        "upcoming_high_impact_events",
     }
 
     missing = required_fields - analysis.keys()
@@ -812,6 +888,7 @@ def validate_analysis(analysis, qualified_news, market_data=None):
         "important_events",
         "key_risks",
         "missing_information",
+        "upcoming_high_impact_events",
     ):
         if not isinstance(analysis[field], list):
             raise ValueError(
@@ -940,6 +1017,53 @@ def validate_analysis(analysis, qualified_news, market_data=None):
                     "in the qualified news evidence: "
                     f"{source_pair}"
                 )
+    # Date-based watchlist filtering, independent of the model's
+    # interpretation of whether today's event has finished.
+    report_date = (
+        report_date or datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    )
+    retained_upcoming = []
+    for index, event in enumerate(analysis["upcoming_high_impact_events"]):
+        if not isinstance(event, dict):
+            raise ValueError(f"Upcoming event {index} must be an object")
+        for field in ("event", "date", "why_watch"):
+            if not isinstance(event.get(field), str) or not event[field].strip():
+                raise ValueError(f"Upcoming event {index}: invalid {field}")
+        try:
+            event_date = datetime.strptime(event["date"], "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValueError(f"Upcoming event {index}: invalid date") from exc
+        if event_date.isoformat() != event["date"]:
+            raise ValueError(f"Upcoming event {index}: date must be YYYY-MM-DD")
+        sources = event.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise ValueError(f"Upcoming event {index} requires sources")
+        for source in sources:
+            if not isinstance(source, dict) or (
+                source.get("title"), source.get("url")
+            ) not in allowed_sources:
+                raise ValueError(f"Upcoming event {index}: unqualified source")
+        # The SAME retained claim must contain the date and cite one
+        # of this event's sources. Source membership alone is insufficient.
+        cited_pairs = {(source["title"], source["url"]) for source in sources}
+        date_supported = any(
+            claim_explicitly_supports_date(claim.get("claim"), event_date)
+            and any(
+                (source.get("title"), source.get("url")) in cited_pairs
+                for source in claim.get("sources", [])
+            )
+            for qualified_event in qualified_news["events"]
+            for claim in qualified_event["claims"]
+        )
+        if not date_supported:
+            raise ValueError(
+                f"Upcoming event {index}: scheduled date not supported "
+                "by a cited qualified claim"
+            )
+        if event_date >= report_date:
+            retained_upcoming.append(event)
+    analysis["upcoming_high_impact_events"] = retained_upcoming
+
     if market_data is not None:
         missing_markets = set(
             market_data.get("errors", {})
@@ -1028,7 +1152,8 @@ def analyze_market(market_data, fact_result):
     )
 
     return validate_analysis(
-    analysis,
-    qualified_news,
-    market_data
+        analysis,
+        qualified_news,
+        market_data,
+        now_ist.date(),
     )
