@@ -1,3 +1,4 @@
+from news_freshness import require_fresh_event_sources
 
 import json
 import os
@@ -65,6 +66,23 @@ RULES
 
 9. Return exactly one assessment per input event.
 
+
+CLAIM TYPE RULES
+
+For every extracted claim, the "claim_type" field
+MUST contain exactly one of these lowercase values:
+
+- "reported": A development presented as already occurred.
+- "forecast": A future prediction or expectation.
+- "opinion": An interpretation or subjective viewpoint.
+- "mixed": A claim combining multiple information types.
+
+Do not use other labels such as "factual",
+"prediction", "expected", "actual", or "unknown".
+
+Use the exact lowercase strings shown above.
+
+
 OUTPUT JSON
 
 {
@@ -100,6 +118,8 @@ def verify_event_facts(quality_result):
 
     if not isinstance(events, list):
         raise ValueError("accepted_events must be a list")
+
+    require_fresh_event_sources(events)
 
     if not events:
         return {
@@ -201,10 +221,16 @@ def verify_event_facts(quality_result):
             ):
                 raise ValueError("Missing claim text")
 
-            if claim.get("claim_type") not in (
+            claim_type = claim.get("claim_type")
+
+            if claim_type not in (
                 "reported", "forecast", "opinion", "mixed"
             ):
-                raise ValueError("Invalid claim type")
+                raise ValueError(
+                    f"Invalid claim type for event {index}: "
+                    f"{claim_type!r}. "
+                    "Expected reported, forecast, opinion, or mixed."
+                )
 
             if claim.get("headline_grounding") not in (
                 "SUPPORTED_BY_HEADLINE",
@@ -310,6 +336,31 @@ Important:
   support for the complete claim.
 - Return JSON only.
 
+STRICT OUTPUT RULES
+
+For each claim, the "agreement" field MUST be
+exactly one of these four values:
+
+"AGREE"
+"SINGLE_SUPPORT"
+"CONFLICT"
+"UNCLEAR"
+
+Never return other values such as:
+"PARTIAL_SUPPORT"
+"PARTIAL_AGREEMENT"
+"SUPPORTED"
+"NOT_SUPPORTED"
+
+If a headline only partially supports a claim,
+or the evidence is insufficient to determine agreement,
+use "UNCLEAR".
+
+Do not introduce new agreement classifications.
+
+Every claim_id must appear exactly once.
+Every assessment must contain a non-empty reason.
+
 Output:
 {
   "assessments": [
@@ -321,6 +372,48 @@ Output:
   ]
 }
 """
+
+AGREEMENT_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "name": "headline_agreement",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "assessments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "claim_id": {
+                            "type": "string"
+                        },
+                        "agreement": {
+                            "type": "string",
+                            "enum": [
+                                "AGREE",
+                                "SINGLE_SUPPORT",
+                                "CONFLICT",
+                                "UNCLEAR"
+                            ]
+                        },
+                        "reason": {
+                            "type": "string"
+                        }
+                    },
+                    "required": [
+                        "claim_id",
+                        "agreement",
+                        "reason"
+                    ],
+                    "additionalProperties": False
+                }
+            }
+        },
+        "required": ["assessments"],
+        "additionalProperties": False
+    }
+}
 
 
 def assess_headline_agreement(fact_result):
@@ -401,9 +494,7 @@ def assess_headline_agreement(fact_result):
             }
         ],
         text={
-            "format": {
-                "type": "json_object"
-            }
+            "format": AGREEMENT_RESPONSE_FORMAT
         }
     )
 
@@ -426,21 +517,38 @@ def assess_headline_agreement(fact_result):
 
     for assessment in assessments:
         if not isinstance(assessment, dict):
-            raise ValueError("Invalid assessment object")
+            raise ValueError(
+                "Invalid agreement assessment object"
+            )
 
         claim_id = assessment.get("claim_id")
         agreement = assessment.get("agreement")
         reason = assessment.get("reason")
 
         if (
-            claim_id not in claim_lookup
-            or claim_id in seen
-            or agreement not in allowed
-            or not isinstance(reason, str)
-            or not reason.strip()
+            not isinstance(claim_id, str)
+            or claim_id not in claim_lookup
         ):
             raise ValueError(
-                f"Invalid agreement assessment: {claim_id}"
+                f"Unknown agreement claim ID: {claim_id!r}"
+            )
+
+        if claim_id in seen:
+            raise ValueError(
+                f"Duplicate agreement assessment: {claim_id}"
+            )
+
+        if agreement not in allowed:
+            raise ValueError(
+                f"Invalid agreement status for "
+                f"{claim_id}: {agreement!r}. "
+                f"Allowed: {sorted(allowed)}"
+            )
+
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(
+                f"Missing or invalid agreement reason "
+                f"for {claim_id}: {reason!r}"
             )
 
         seen.add(claim_id)
@@ -450,9 +558,12 @@ def assess_headline_agreement(fact_result):
             "reason": reason
         }
 
-    if seen != set(claim_lookup):
+    missing_claims = set(claim_lookup) - seen
+
+    if missing_claims:
         raise ValueError(
-            "Not every claim received an agreement assessment"
+            "Missing agreement assessments for claims: "
+            f"{sorted(missing_claims)}"
         )
 
     return fact_result

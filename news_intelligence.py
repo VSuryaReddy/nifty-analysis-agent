@@ -6,13 +6,19 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from news import fetch_news
+from news_freshness import is_current_article
+from datetime import datetime
 
 
 load_dotenv()
 
 
 def group_news_into_events(news_data):
-    articles = news_data.get("articles", [])
+    reference_time = datetime.fromisoformat(news_data["collected_at_utc"])
+    if reference_time.tzinfo is None:
+        raise ValueError("News collection time requires UTC timezone")
+    articles = [a for a in news_data.get("articles", [])
+                if is_current_article(a, reference_time)]
 
     if not articles:
         return {
@@ -32,6 +38,7 @@ def group_news_into_events(news_data):
     # Assign stable IDs for linking events to sources
     indexed_articles = [
         {
+            **article,
             "id": index,
             "category": article["category"],
             "title": article["title"],
