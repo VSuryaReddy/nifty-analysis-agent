@@ -39,9 +39,12 @@ def main():
         f"{news_data['article_count']}"
     )
 
+    print("   Freshness statistics:", json.dumps(news_data.get("collection_statistics", {})))
+
     if news_data["article_count"] == 0:
+        print(json.dumps(news_data, indent=2, ensure_ascii=False))
         raise RuntimeError(
-            "No news collected. Analysis stopped."
+            "No verified fresh news collected. Analysis stopped."
         )
 
     print("\n3. Grouping news into events...")
@@ -54,6 +57,7 @@ def main():
     fact_result = verify_event_facts(quality_result)
     fact_result = assess_headline_agreement(fact_result)
     fact_result = apply_evidence_assessment(fact_result)
+    fact_result["news_collected_at_utc"] = news_data.get("collected_at_utc")
 
     print("\n6. Analyzing with OpenAI...")
     analysis = analyze_market(market_data, fact_result)
@@ -65,6 +69,9 @@ def main():
         "market_data": market_data,
         "news_count": news_data["article_count"],
         "news_errors": news_data.get("errors", []),
+        "news_collection_statistics": news_data.get("collection_statistics", {}),
+        "news_category_coverage": news_data.get("category_coverage", {}),
+        "news_diagnostic_articles": news_data.get("diagnostic_articles", []),
         "news_pipeline": {
             "grouped_events": len(
                 grouped_news.get("events", [])

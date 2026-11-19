@@ -1,3 +1,4 @@
+from news_freshness import require_fresh_event_sources
 
 import json
 import os
@@ -117,6 +118,8 @@ def verify_event_facts(quality_result):
 
     if not isinstance(events, list):
         raise ValueError("accepted_events must be a list")
+
+    require_fresh_event_sources(events)
 
     if not events:
         return {

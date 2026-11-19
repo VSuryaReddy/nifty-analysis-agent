@@ -1,9 +1,11 @@
+from news_freshness import is_current_article
 
 import json
 import math
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -681,6 +683,10 @@ def prepare_qualified_news(fact_result, market_data):
     Exclude unsupported or conflicting claims.
     """
 
+    collected_at = fact_result.get("news_collected_at_utc") or market_data.get("collected_at_utc")
+    reference_time = datetime.fromisoformat(collected_at) if collected_at else datetime.now(timezone.utc)
+    if reference_time.tzinfo is None:
+        raise ValueError("News reference time requires a timezone")
     qualified_events = []
     excluded_claims = 0
 
@@ -690,6 +696,12 @@ def prepare_qualified_news(fact_result, market_data):
             for source in event.get("sources", [])
         }
 
+        if not sources or not all(
+            is_current_article(source, reference_time)
+            for source in sources.values()
+        ):
+            excluded_claims += len(event.get("fact_assessment", {}).get("claims", []))
+            continue
         qualified_claims = []
 
         claims = event.get(
@@ -737,6 +749,11 @@ def prepare_qualified_news(fact_result, market_data):
                 supporting_sources.append({
                     "title": source["title"],
                     "url": source["url"],
+                    "original_article_url": source.get("original_article_url"),
+                    "original_published_at_utc": source["original_published_at_utc"],
+                    "rss_published_at_utc": source.get("rss_published_at_utc"),
+                    "freshness_status": source["freshness_status"],
+                    "freshness_reason": source.get("freshness_reason"),
                     "published_at_utc": source[
                         "published_at_utc"
                     ],
@@ -847,6 +864,27 @@ def claim_explicitly_supports_date(claim_text, event_date):
     return any(re.search(pattern, claim_text, re.IGNORECASE) for pattern in patterns)
 
 
+def source_citation_aliases(source):
+    """Return exact citation pairs for a source on a retained qualified claim."""
+    title = source.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return set()
+    aliases = set()
+    for field in ("url", "original_article_url"):
+        url = source.get(field)
+        if not isinstance(url, str) or any(character.isspace() for character in url):
+            continue
+        try:
+            parsed = urlsplit(url)
+            if (parsed.scheme in ("http", "https") and parsed.hostname
+                    and not parsed.username and not parsed.password
+                    and (parsed.port is None or parsed.port > 0)):
+                aliases.add((title, url))
+        except ValueError:
+            continue
+    return aliases
+
+
 def validate_analysis(analysis, qualified_news, market_data=None, report_date=None):
     """
     Validate JSON structure, probabilities and citations.
@@ -954,14 +992,15 @@ def validate_analysis(analysis, qualified_news, market_data=None, report_date=No
     # Only source pairs attached to retained claims
     # may appear in the final analysis.
     allowed_sources = set()
+    claim_citations = []
 
     for event in qualified_news["events"]:
         for claim in event["claims"]:
+            aliases = set()
             for source in claim["sources"]:
-                allowed_sources.add((
-                    source["title"],
-                    source["url"],
-                ))
+                aliases.update(source_citation_aliases(source))
+            allowed_sources.update(aliases)
+            claim_citations.append((claim, aliases))
 
     for index, event in enumerate(
         analysis["important_events"]
@@ -1048,12 +1087,8 @@ def validate_analysis(analysis, qualified_news, market_data=None, report_date=No
         cited_pairs = {(source["title"], source["url"]) for source in sources}
         date_supported = any(
             claim_explicitly_supports_date(claim.get("claim"), event_date)
-            and any(
-                (source.get("title"), source.get("url")) in cited_pairs
-                for source in claim.get("sources", [])
-            )
-            for qualified_event in qualified_news["events"]
-            for claim in qualified_event["claims"]
+            and bool(aliases & cited_pairs)
+            for claim, aliases in claim_citations
         )
         if not date_supported:
             raise ValueError(

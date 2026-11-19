@@ -19,6 +19,8 @@ from analyst import prepare_qualified_news, validate_analysis
 
 SOURCE = {
     "id": 7,
+    "freshness_status": "VERIFIED_FRESH",
+    "original_published_at_utc": "2026-11-16T05:00:00+00:00",
     "title": "Central bank confirms policy decision scheduled for 18 November 2026",
     "url": "https://example.org/fictional-policy-calendar",
     "source": "Reserve Bank of India",
@@ -69,7 +71,7 @@ def upcoming_event(day, source=None):
 
 class UpcomingEventsIntegrationTests(unittest.TestCase):
     def setUp(self):
-        self.qualified_news = prepare_qualified_news(fact_result(), {"markets": {}})
+        self.qualified_news = prepare_qualified_news(fact_result(), {"markets": {}, "collected_at_utc": "2026-11-17T12:00:00+00:00"})
         self.report_date = date(2026, 11, 17)
 
     def validate(self, upcoming):
